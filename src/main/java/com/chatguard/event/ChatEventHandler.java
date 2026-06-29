@@ -3,116 +3,184 @@ package com.chatguard.event;
 import com.chatguard.config.ChatGuardConfig;
 import com.chatguard.gui.ViolationOverlay;
 import com.chatguard.util.ChatParser;
-import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.sound.SoundEvents;
 import net.minecraft.text.*;
 import net.minecraft.util.Formatting;
 
+import java.io.*;
+import java.nio.file.*;
+import java.util.*;
+
 public class ChatEventHandler {
 
+    private static long lastFilePos = 0;
+    private static Path logFile = null;
+    private static int searchTickCooldown = 0;
+
     public static void register() {
-        ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
-            if (overlay) return;
-            handleChatMessage(message);
+        // Вместо перехвата чата — читаем лог-файл напрямую как AHK
+        ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            if (client.player == null) return;
+
+            // Ищем лог-файл раз в 100 тиков если не найден
+            if (logFile == null || !Files.exists(logFile)) {
+                if (searchTickCooldown-- <= 0) {
+                    searchTickCooldown = 100;
+                    logFile = findLogFile();
+                    if (logFile != null) {
+                        // Начинаем читать с конца — старые сообщения не нужны
+                        try { lastFilePos = Files.size(logFile); } catch (Exception e) { lastFilePos = 0; }
+                        System.out.println("[ChatGuard] Лог найден: " + logFile);
+                    }
+                }
+                return;
+            }
+
+            // Читаем новые строки из лога
+            try {
+                long fileSize = Files.size(logFile);
+                if (fileSize < lastFilePos) {
+                    // Файл пересоздан (новая сессия)
+                    lastFilePos = 0;
+                }
+                if (fileSize <= lastFilePos) return;
+
+                try (RandomAccessFile raf = new RandomAccessFile(logFile.toFile(), "r")) {
+                    raf.seek(lastFilePos);
+                    String line;
+                    while ((line = raf.readLine()) != null) {
+                        // readLine возвращает bytes как ISO-8859-1, конвертируем в UTF-8
+                        line = new String(line.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1),
+                                java.nio.charset.StandardCharsets.UTF_8);
+                        processLogLine(line, client);
+                    }
+                    lastFilePos = raf.getFilePointer();
+                }
+            } catch (Exception e) {
+                // ignore
+            }
         });
     }
 
-    private static void handleChatMessage(Text message) {
-        String raw = message.getString();
+    /**
+     * Автопоиск лог-файла latest.log
+     * Ищет в стандартных местах для Windows/Linux/Mac
+     * и рядом с запущенным .jar (для нестандартных лаунчеров)
+     */
+    private static Path findLogFile() {
+        List<Path> candidates = new ArrayList<>();
 
-        ChatGuardConfig.TriggerCategory cat = ChatParser.findViolation(raw);
-        if (cat == null) return;
+        String userHome = System.getProperty("user.home", "");
+        String appData  = System.getenv("APPDATA");
 
-        String nick = ChatParser.extractNick(raw);
-        if (nick == null || nick.isEmpty()) return;
+        // 1. Стандартный .minecraft (Windows)
+        if (appData != null)
+            candidates.add(Paths.get(appData, ".minecraft", "logs", "latest.log"));
 
-        String msgText  = ChatParser.extractMessage(raw);
-        String word     = ChatParser.findTriggeredWord(raw, cat);
-
-        // Формируем команду мута
-        String cmd = "/mute " + nick + " " + cat.time + " " + cat.rule + " | " + cat.reason;
-
-        MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc.player == null) return;
-
-        // Строим красивое уведомление
-        mc.inGameHud.getChatHud().addMessage(buildAlert(nick, cat, msgText, word, cmd));
-
-        // Звук
-        if (ChatGuardConfig.getInstance().soundEnabled) {
-            mc.player.playSound(SoundEvents.BLOCK_NOTE_BLOCK_PLING.value(),
-                    ChatGuardConfig.getInstance().soundVolume, 1.5f);
+        // 2. .minecraft рядом с user.home (Linux/Mac)
+        if (!userHome.isEmpty()) {
+            candidates.add(Paths.get(userHome, ".minecraft", "logs", "latest.log"));
+            candidates.add(Paths.get(userHome, "Library", "Application Support", "minecraft", "logs", "latest.log"));
         }
 
-        // HUD оверлей
-        ViolationOverlay.addAlert(nick, word, cat);
+        // 3. Текущая рабочая директория (нестандартные лаунчеры — TLauncher, LabyMod и т.д.)
+        Path cwd = Paths.get("").toAbsolutePath();
+        candidates.add(cwd.resolve("logs").resolve("latest.log"));
+        candidates.add(cwd.resolve("latest.log"));
+
+        // 4. Родительская директория (если запущен из папки bin)
+        candidates.add(cwd.getParent() != null
+                ? cwd.getParent().resolve("logs").resolve("latest.log")
+                : null);
+
+        // 5. Через FabricLoader — получить game directory
+        try {
+            Path gameDir = net.fabricmc.loader.api.FabricLoader.getInstance().getGameDir();
+            candidates.add(gameDir.resolve("logs").resolve("latest.log"));
+            // Также проверяем папку выше (некоторые лаунчеры кладут logs рядом)
+            candidates.add(gameDir.getParent() != null
+                    ? gameDir.getParent().resolve("logs").resolve("latest.log")
+                    : null);
+        } catch (Exception ignored) {}
+
+        for (Path p : candidates) {
+            if (p != null && Files.exists(p)) {
+                return p;
+            }
+        }
+
+        System.err.println("[ChatGuard] Лог-файл не найден! Проверены пути: " + candidates);
+        return null;
     }
 
-    // ============================================================
-    //  КРАСИВОЕ УВЕДОМЛЕНИЕ В ЧАТ
-    //  Формат как на скриншоте:
-    //  ──────────────────────────────────────
-    //  [МОДЕРАЦИЯ] ⚠ Нарушение обнаружено!
-    //  Игрок: Nick | Причина: ... | Рек. мут: 60m
-    //  Сообщение: "текст сообщения"
-    //  Детали: Слово: "слово" | Категория: Оскорбления
-    //  Команда: /mute Nick 60m ...   [ВСТАВИТЬ] [КОПИРОВАТЬ]
-    //  ──────────────────────────────────────
-    // ============================================================
+    private static void processLogLine(String line, MinecraftClient client) {
+        // Фильтр: только строки чата
+        // Формат: [HH:MM:SS] [Render thread/INFO]: [System] [CHAT] сообщение
+        if (!line.contains("[CHAT]")) return;
+
+        // Извлекаем текст после [CHAT]
+        int chatIdx = line.indexOf("[CHAT]");
+        if (chatIdx < 0) return;
+        String chatLine = line.substring(chatIdx + 6).trim();
+
+        // Проверяем на триггеры
+        ChatGuardConfig.TriggerCategory cat = ChatParser.findViolation(chatLine);
+        if (cat == null) return;
+
+        String nick    = ChatParser.extractNick(chatLine);
+        if (nick == null || nick.isEmpty()) return;
+
+        String msgText = ChatParser.extractMessage(chatLine);
+        String word    = ChatParser.findTriggeredWord(chatLine, cat);
+        String cmd     = "/mute " + nick + " " + cat.time + " " + cat.rule + " | " + cat.reason;
+
+        // Выполняем на главном потоке
+        client.execute(() -> {
+            if (client.player == null) return;
+            client.inGameHud.getChatHud().addMessage(buildAlert(nick, cat, msgText, word, cmd));
+            if (ChatGuardConfig.getInstance().soundEnabled) {
+                client.player.playSound(SoundEvents.BLOCK_NOTE_BLOCK_PLING.value(),
+                        ChatGuardConfig.getInstance().soundVolume, 1.5f);
+            }
+            ViolationOverlay.addAlert(nick, word, cat);
+        });
+    }
+
     private static Text buildAlert(String nick, ChatGuardConfig.TriggerCategory cat,
                                     String msgText, String word, String cmd) {
         String sep = "§8§m──────────────────────────────────────§r";
+        String shortMsg = msgText.length() > 50 ? msgText.substring(0, 50) + "..." : msgText;
 
-        // Строка 1: разделитель
         MutableText t = Text.literal(sep + "\n");
-
-        // Строка 2: заголовок
         t.append(Text.literal("§c§l[МОДЕРАЦИЯ] §e⚠ §f§lНарушение обнаружено!\n"));
-
-        // Строка 3: игрок + причина + время
         t.append(Text.literal("§7Игрок: §f" + nick
                 + " §8| §7Причина: §f" + cat.reason
                 + " §8| §7Рек. мут: §e" + cat.time + "\n"));
-
-        // Строка 4: сообщение
-        String shortMsg = msgText.length() > 50 ? msgText.substring(0, 50) + "..." : msgText;
         t.append(Text.literal("§7Сообщение: §f\"" + shortMsg + "\"\n"));
-
-        // Строка 5: детали
-        t.append(Text.literal("§7Детали: §7Слово: §c\"" + word
+        t.append(Text.literal("§7Детали: Слово: §c\"" + word
                 + "\" §8| §7Категория: §f" + cat.name + "\n"));
-
-        // Строка 6: команда + кнопки [ВСТАВИТЬ] и [КОПИРОВАТЬ]
         t.append(Text.literal("§7Команда: §a" + cmd + " "));
 
-        // Кнопка [ВСТАВИТЬ] — suggest command (открывает чат с командой)
         MutableText btnInsert = Text.literal("§2§l[ВСТАВИТЬ]");
         btnInsert.setStyle(Style.EMPTY
-                .withColor(Formatting.GREEN)
-                .withBold(true)
+                .withColor(Formatting.GREEN).withBold(true)
                 .withClickEvent(new ClickEvent(ClickEvent.Action.SUGGEST_COMMAND, cmd))
                 .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
                         Text.literal("§aВставить команду в чат\n§7" + cmd))));
         t.append(btnInsert);
-
         t.append(Text.literal(" "));
 
-        // Кнопка [КОПИРОВАТЬ] — copy to clipboard
         MutableText btnCopy = Text.literal("§3§l[КОПИРОВАТЬ]");
         btnCopy.setStyle(Style.EMPTY
-                .withColor(Formatting.DARK_AQUA)
-                .withBold(true)
+                .withColor(Formatting.DARK_AQUA).withBold(true)
                 .withClickEvent(new ClickEvent(ClickEvent.Action.COPY_TO_CLIPBOARD, cmd))
                 .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
-                        Text.literal("§bСкопировать команду в буфер обмена\n§7" + cmd))));
+                        Text.literal("§bСкопировать в буфер обмена\n§7" + cmd))));
         t.append(btnCopy);
-
         t.append(Text.literal("\n"));
-
-        // Строка 7: разделитель
         t.append(Text.literal(sep));
-
         return t;
     }
 }
