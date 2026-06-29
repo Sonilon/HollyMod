@@ -13,40 +13,39 @@ import org.lwjgl.glfw.GLFW;
 
 public class ChatGuardClient implements ClientModInitializer {
 
-    private boolean rightShiftWasDown = false;
+    // Открытие настроек: клавиша M (на русской раскладке — ь)
+    // Без модификаторов, срабатывает только вне чата/меню
+    private static final int OPEN_KEY = GLFW.GLFW_KEY_M;
+
+    private boolean keyWasDown = false;
 
     @Override
     public void onInitializeClient() {
-        // Загружаем конфиг
         ChatGuardConfig.load();
-
-        // Регистрируем обработчик чата
         ChatEventHandler.register();
 
-        // Правый Shift → открыть настройки
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (client.player == null) return;
-            long win = client.getWindow().getHandle();
-            boolean rightShiftDown = InputUtil.isKeyPressed(win, GLFW.GLFW_KEY_RIGHT_SHIFT);
+            if (client.currentScreen != null) return; // не срабатывает в чате/меню
 
-            if (rightShiftDown && !rightShiftWasDown) {
-                // Не открываем, если уже открыт экран настроек
-                if (client.currentScreen == null) {
-                    client.setScreen(new ChatGuardSettingsScreen(null));
-                }
+            long win = client.getWindow().getHandle();
+            boolean keyDown = InputUtil.isKeyPressed(win, OPEN_KEY);
+
+            if (keyDown && !keyWasDown) {
+                client.setScreen(new ChatGuardSettingsScreen(null));
             }
-            rightShiftWasDown = rightShiftDown;
+            keyWasDown = keyDown;
         });
 
-        // HUD — рендер оверлея с нарушителями
         HudRenderCallback.EVENT.register((ctx, tickDelta) -> {
             MinecraftClient mc = MinecraftClient.getInstance();
-            if (mc.currentScreen != null) return; // не показывать поверх экранов
-            if (mc.player == null) return;
-            ViolationOverlay.render(ctx, mc.getWindow().getScaledWidth(),
-                    mc.getWindow().getScaledHeight(), tickDelta);
+            if (mc.currentScreen != null || mc.player == null) return;
+            ViolationOverlay.render(ctx,
+                    mc.getWindow().getScaledWidth(),
+                    mc.getWindow().getScaledHeight(),
+                    tickDelta);
         });
 
-        System.out.println("[ChatGuard] Мод загружен! Правый Shift = настройки.");
+        System.out.println("[ChatGuard] Загружен! M (ь) = настройки ChatGuard.");
     }
 }
