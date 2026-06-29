@@ -35,7 +35,7 @@ public class TelegramLogger {
             "🕐 " + time;
 
         // Отправляем в отдельном потоке чтобы не лагал клиент
-        Thread.ofVirtual().start(() -> {
+        new Thread(() -> {
             try {
                 String url = "https://api.telegram.org/bot" + cfg.telegramBotToken + "/sendMessage";
                 String body = "chat_id=" + URLEncoder.encode(cfg.telegramChatId, "UTF-8")
@@ -53,7 +53,7 @@ public class TelegramLogger {
             } catch (Exception e) {
                 System.err.println("[ChatGuard] Ошибка Telegram: " + e.getMessage());
             }
-        });
+        }).start();
     }
 
     private static String escapeMarkdown(String text) {
