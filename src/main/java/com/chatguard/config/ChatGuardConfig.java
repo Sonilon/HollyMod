@@ -18,7 +18,11 @@ public class ChatGuardConfig {
     public float soundVolume = 1.0f;
     public String muteCommand = "/mute {nick} {time} {rule} | {reason}";
 
-    // Категории триггеров с приоритетом (первая = высший приоритет)
+    // Telegram настройки
+    public String telegramBotToken = "";
+    public String telegramChatId = "";
+    public boolean telegramEnabled = false;
+
     public List<TriggerCategory> categories = new ArrayList<>();
 
     public static class TriggerCategory {
@@ -70,18 +74,15 @@ public class ChatGuardConfig {
             "гандон","додик","конченный","конченый","хуила","хуеглот","ебанный",
             "ебаный","ебаные","ебанные","хуисос","долбоеб"
         );
-
         TriggerCategory amor = new TriggerCategory(
             "Аморальное поведение", "60m", "3.3", "Аморальное поведение.",
             "soso","сосо","sosi","соси","дососал","отсосал","otsosal",
             "выебан","выебал","соснул","сосешь","трахнул","sosnyl"
         );
-
         TriggerCategory rodnya = new TriggerCategory(
             "Оскорбление родных", "180m", "3.7", "Упом. родных или близких.",
             "сын","сынок","мамку","матуху","батька"
         );
-
         cfg.categories.add(osk);
         cfg.categories.add(amor);
         cfg.categories.add(rodnya);

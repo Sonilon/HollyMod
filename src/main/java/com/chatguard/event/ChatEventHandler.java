@@ -3,6 +3,7 @@ package com.chatguard.event;
 import com.chatguard.config.ChatGuardConfig;
 import com.chatguard.gui.ViolationOverlay;
 import com.chatguard.util.ChatParser;
+import com.chatguard.util.TelegramLogger;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.sound.SoundEvents;
@@ -145,6 +146,7 @@ public class ChatEventHandler {
                         ChatGuardConfig.getInstance().soundVolume, 1.5f);
             }
             ViolationOverlay.addAlert(nick, word, cat);
+            TelegramLogger.sendViolation(nick, word, msgText, cmd, cat);
         });
     }
 
