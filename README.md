@@ -147,20 +147,7 @@
 }
 ```
 
----
 
-## 🔧 Сборка из исходников
-
-```bash
-# Требуется Java 17+ и Gradle 8.3
-gradle wrapper --gradle-version 8.3
-gradlew build
-# Готовый .jar в build/libs/
-```
-
-Или используй **GitHub Actions** — `.github/workflows/build.yml` уже настроен.
-
----
 
 <div align="center">
 
